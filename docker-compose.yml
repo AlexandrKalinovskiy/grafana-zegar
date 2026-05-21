@@ -3,14 +3,15 @@ services:
     build: .
     container_name: zegar
     environment:
-      # :0 = XWayland display (standardowy na Raspberry Pi OS z Waylandem)
-      # Zmień na :1 jeśli `ls /tmp/.X11-unix/` pokazuje X1
       - DISPLAY=:0
       - TZ=${TZ:-Europe/Warsaw}
+      - XAUTHORITY=/root/.Xauthority
     volumes:
-      # XWayland socket – pozwala kontenerowi rysować okno na pulpicie
+      # XWayland socket
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Konfiguracja alarmu (zmień bez przebudowywania obrazu)
+      # Xauthority – klucz dostępu do XWayland
+      - /home/pnt/.Xauthority:/root/.Xauthority:ro
+      # Konfiguracja alarmu
       - ./.env:/app/.env
     network_mode: host
     restart: unless-stopped
