@@ -2,6 +2,7 @@ import tkinter as tk
 import os
 import time
 import math
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -15,12 +16,15 @@ BG_COLOR    = "#3a3a3a"
 PULSE_BG    = "#1a1a1a"
 TEXT_COLOR  = "#ffffff"
 BLINK_COLOR = "#ff4444"
+BTN_COLOR   = "#555555"
+BTN_ACTIVE  = "#777777"
 
-ZOOM_PERIOD    = 2.0   # seconds per full zoom cycle
-ZOOM_AMPLITUDE = 0.25  # ±25 % of base font size
+ZOOM_PERIOD    = 2.0   # seconds per font-zoom cycle
+ZOOM_AMPLITUDE = 0.25  # ±25 % font oscillation
+WIN_SCALE      = 3.0   # window grows to 3× home size during pulse
+BOUNCE_SPEED   = 300   # px/s
 
-# Window bouncing speed (pixels per second)
-BOUNCE_SPEED = 300
+HOME_POS_FILE  = "/app/home_pos.json"   # persisted via docker volume
 
 # --- Helpers ---------------------------------------------------------------
 
@@ -41,6 +45,22 @@ def is_pulse_active(now: datetime) -> bool:
     return start <= current < end
 
 
+def load_home() -> dict | None:
+    try:
+        with open(HOME_POS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_home(x: int, y: int, w: int, h: int):
+    try:
+        with open(HOME_POS_FILE, "w") as f:
+            json.dump({"x": x, "y": y, "w": w, "h": h}, f)
+    except Exception as e:
+        print(f"[WARN] Nie można zapisać home_pos.json: {e}")
+
+
 # --- Main Window -----------------------------------------------------------
 
 class ClockApp:
@@ -50,6 +70,7 @@ class ClockApp:
         self.root.configure(bg=BG_COLOR)
         self.root.minsize(180, 70)
 
+        # --- Layout: clock label + save-position button ---
         self.label = tk.Label(
             root,
             text="00:00",
@@ -59,35 +80,82 @@ class ClockApp:
         )
         self.label.pack(expand=True, fill="both")
 
+        self.save_btn = tk.Button(
+            root,
+            text="📌 Zapisz pozycję",
+            command=self._save_position,
+            bg=BTN_COLOR,
+            fg="#cccccc",
+            activebackground=BTN_ACTIVE,
+            activeforeground="#ffffff",
+            relief="flat",
+            bd=0,
+            pady=4,
+            cursor="hand2",
+            font=("Monospace", 9),
+        )
+        self.save_btn.pack(fill="x", side="bottom")
+
         self.root.bind("<Configure>", self._on_resize)
 
-        self._base_font  = 60
-        self._last_size  = (0, 0)
-        self._blink_show = True
+        # Internal state
+        self._base_font   = 60
+        self._last_size   = (0, 0)
+        self._blink_show  = True
+        self._bouncing    = False
 
-        # Bouncing state — initialised after the window is visible
+        # Bounce position
         self._bounce_x    = 0.0
         self._bounce_y    = 0.0
-        self._vel_x       = BOUNCE_SPEED      # px/s
+        self._vel_x       = BOUNCE_SPEED
         self._vel_y       = BOUNCE_SPEED * 0.7
         self._last_bounce = time.monotonic()
-        self._bouncing    = False             # True only while pulsing
 
-        # Wait for the window to appear, then snapshot its start position
-        self.root.after(200, self._init_bounce_pos)
+        # Home geometry (position + size): loaded from file or set after render
+        self._home: dict | None = load_home()
+
+        # Apply saved home geometry on startup
+        self.root.after(200, self._apply_home_on_start)
         self._tick()
 
-    def _init_bounce_pos(self):
+    # Startup ----------------------------------------------------------------
+
+    def _apply_home_on_start(self):
         self.root.update_idletasks()
-        self._bounce_x = float(self.root.winfo_x())
-        self._bounce_y = float(self.root.winfo_y())
+        if self._home:
+            h = self._home
+            self.root.geometry(f"{h['w']}x{h['h']}+{h['x']}+{h['y']}")
+        else:
+            # No saved position: use current position as default home
+            self._snapshot_home()
+        # Initialise bounce start coords from current position
+        self._bounce_x    = float(self.root.winfo_x())
+        self._bounce_y    = float(self.root.winfo_y())
         self._last_bounce = time.monotonic()
 
-    # Responsive base font size -----------------------------------------------
+    # Save-position button ---------------------------------------------------
+
+    def _save_position(self):
+        self.root.update_idletasks()
+        self._snapshot_home()
+        # Flash button as feedback
+        self.save_btn.configure(bg="#30a030", text="✔ Zapisano!")
+        self.root.after(1500, lambda: self.save_btn.configure(
+            bg=BTN_COLOR, text="📌 Zapisz pozycję"))
+
+    def _snapshot_home(self):
+        x = self.root.winfo_x()
+        y = self.root.winfo_y()
+        w = self.root.winfo_width()
+        h = self.root.winfo_height()
+        self._home = {"x": x, "y": y, "w": w, "h": h}
+        save_home(x, y, w, h)
+
+    # Responsive base font ---------------------------------------------------
 
     def _recalc_base(self, w, h):
         by_h = max(8, int(h * 0.55))
-        by_w = max(8, int(w / (5 * 0.62)))   # "HH:MM" = 5 chars
+        by_w = max(8, int(w / (5 * 0.62)))
         return min(by_h, by_w)
 
     def _on_resize(self, event=None):
@@ -100,7 +168,7 @@ class ClockApp:
         if not is_pulse_active(datetime.now()):
             self.label.configure(font=("Monospace", self._base_font, "bold"))
 
-    # Bouncing logic ----------------------------------------------------------
+    # Bounce -----------------------------------------------------------------
 
     def _step_bounce(self):
         now  = time.monotonic()
@@ -115,16 +183,15 @@ class ClockApp:
         self._bounce_x += self._vel_x * dt
         self._bounce_y += self._vel_y * dt
 
-        # Bounce off screen edges
         if self._bounce_x < 0:
-            self._bounce_x = 0
+            self._bounce_x = 0.0
             self._vel_x = abs(self._vel_x)
         elif self._bounce_x + ww > sw:
             self._bounce_x = float(sw - ww)
             self._vel_x = -abs(self._vel_x)
 
         if self._bounce_y < 0:
-            self._bounce_y = 0
+            self._bounce_y = 0.0
             self._vel_y = abs(self._vel_y)
         elif self._bounce_y + wh > sh:
             self._bounce_y = float(sh - wh)
@@ -132,43 +199,61 @@ class ClockApp:
 
         self.root.geometry(f"+{int(self._bounce_x)}+{int(self._bounce_y)}")
 
-    def _stop_bounce(self):
-        """Snap window back to screen centre when pulsing ends."""
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        ww = self.root.winfo_width()
-        wh = self.root.winfo_height()
-        cx = (sw - ww) // 2
-        cy = (sh - wh) // 2
-        self.root.geometry(f"+{cx}+{cy}")
-        self._bounce_x = float(cx)
-        self._bounce_y = float(cy)
+    def _restore_home(self):
+        """Return window to saved home geometry."""
+        if self._home:
+            h = self._home
+            self.root.geometry(f"{h['w']}x{h['h']}+{h['x']}+{h['y']}")
+            self._bounce_x = float(h["x"])
+            self._bounce_y = float(h["y"])
+        else:
+            # Fallback: centre of screen
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            ww = self.root.winfo_width()
+            wh = self.root.winfo_height()
+            cx, cy = (sw - ww) // 2, (sh - wh) // 2
+            self.root.geometry(f"+{cx}+{cy}")
+            self._bounce_x, self._bounce_y = float(cx), float(cy)
 
-    # Main update loop --------------------------------------------------------
+    # Main loop --------------------------------------------------------------
 
     def _tick(self):
         now   = datetime.now()
         pulse = is_pulse_active(now)
 
         if pulse:
-            # --- Zoom ---
+            # --- Font zoom (sine) ---
             phase     = (time.monotonic() % ZOOM_PERIOD) / ZOOM_PERIOD
             zoom      = 1.0 + ZOOM_AMPLITUDE * math.sin(phase * 2 * math.pi)
             font_size = max(8, int(self._base_font * zoom))
 
-            # --- Blink ---
+            # --- Blink colour ---
             self._blink_show = not self._blink_show
             fg = BLINK_COLOR if self._blink_show else PULSE_BG
             bg = PULSE_BG
 
-            # --- Bounce ---
-            if not self._bouncing:
-                # First tick of a new pulse — snapshot current position
-                self._bounce_x    = float(self.root.winfo_x())
-                self._bounce_y    = float(self.root.winfo_y())
+            # --- Window: grow to WIN_SCALE × home size, then bounce ---
+            if not self._bouncing and self._home:
+                hw = self._home["w"]
+                hh = self._home["h"]
+                big_w = int(hw * WIN_SCALE)
+                big_h = int(hh * WIN_SCALE)
+                # Clamp to screen
+                sw = self.root.winfo_screenwidth()
+                sh = self.root.winfo_screenheight()
+                big_w = min(big_w, sw)
+                big_h = min(big_h, sh)
+                # Place enlarged window at home position (top-left stays)
+                sx = self._home["x"]
+                sy = self._home["y"]
+                self.root.geometry(f"{big_w}x{big_h}+{sx}+{sy}")
+                self._bounce_x    = float(sx)
+                self._bounce_y    = float(sy)
                 self._last_bounce = time.monotonic()
                 self._bouncing    = True
-            self._step_bounce()
+            elif self._bouncing:
+                self._step_bounce()
 
         else:
             font_size        = self._base_font
@@ -178,7 +263,7 @@ class ClockApp:
 
             if self._bouncing:
                 self._bouncing = False
-                self._stop_bounce()
+                self._restore_home()
 
         self.label.configure(
             text=now.strftime("%H:%M"),
@@ -186,6 +271,8 @@ class ClockApp:
             bg=bg,
             font=("Monospace", font_size, "bold"),
         )
+        self.save_btn.configure(bg=BTN_COLOR if not pulse else PULSE_BG,
+                                fg="#cccccc" if not pulse else "#555555")
         self.root.configure(bg=bg)
 
         self.root.after(50 if pulse else 200, self._tick)

@@ -7,11 +7,10 @@ services:
       - TZ=${TZ:-Europe/Warsaw}
       - XAUTHORITY=/root/.Xauthority
     volumes:
-      # XWayland socket
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Xauthority – klucz dostępu do XWayland
       - /home/pnt/.Xauthority:/root/.Xauthority:ro
-      # Konfiguracja alarmu
       - ./.env:/app/.env
+      # Zapisana pozycja/rozmiar okna – przetrwa restarty kontenera
+      - ./home_pos.json:/app/home_pos.json
     network_mode: host
     restart: unless-stopped
