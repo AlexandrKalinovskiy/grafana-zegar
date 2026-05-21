@@ -19,6 +19,9 @@ BLINK_COLOR = "#ff4444"
 ZOOM_PERIOD    = 2.0   # seconds per full zoom cycle
 ZOOM_AMPLITUDE = 0.25  # ±25 % of base font size
 
+# Window bouncing speed (pixels per second)
+BOUNCE_SPEED = 300
+
 # --- Helpers ---------------------------------------------------------------
 
 def parse_hms(s: str) -> int:
@@ -60,9 +63,25 @@ class ClockApp:
 
         self._base_font  = 60
         self._last_size  = (0, 0)
-        self._blink_show = True   # toggles for blink effect
+        self._blink_show = True
 
+        # Bouncing state — initialised after the window is visible
+        self._bounce_x    = 0.0
+        self._bounce_y    = 0.0
+        self._vel_x       = BOUNCE_SPEED      # px/s
+        self._vel_y       = BOUNCE_SPEED * 0.7
+        self._last_bounce = time.monotonic()
+        self._bouncing    = False             # True only while pulsing
+
+        # Wait for the window to appear, then snapshot its start position
+        self.root.after(200, self._init_bounce_pos)
         self._tick()
+
+    def _init_bounce_pos(self):
+        self.root.update_idletasks()
+        self._bounce_x = float(self.root.winfo_x())
+        self._bounce_y = float(self.root.winfo_y())
+        self._last_bounce = time.monotonic()
 
     # Responsive base font size -----------------------------------------------
 
@@ -76,11 +95,54 @@ class ClockApp:
         h = self.root.winfo_height()
         if (w, h) == self._last_size:
             return
-        self._last_size  = (w, h)
-        self._base_font  = self._recalc_base(w, h)
-        # Only apply directly when not pulsing (pulse loop will apply zoom)
+        self._last_size = (w, h)
+        self._base_font = self._recalc_base(w, h)
         if not is_pulse_active(datetime.now()):
             self.label.configure(font=("Monospace", self._base_font, "bold"))
+
+    # Bouncing logic ----------------------------------------------------------
+
+    def _step_bounce(self):
+        now  = time.monotonic()
+        dt   = now - self._last_bounce
+        self._last_bounce = now
+
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        ww = self.root.winfo_width()
+        wh = self.root.winfo_height()
+
+        self._bounce_x += self._vel_x * dt
+        self._bounce_y += self._vel_y * dt
+
+        # Bounce off screen edges
+        if self._bounce_x < 0:
+            self._bounce_x = 0
+            self._vel_x = abs(self._vel_x)
+        elif self._bounce_x + ww > sw:
+            self._bounce_x = float(sw - ww)
+            self._vel_x = -abs(self._vel_x)
+
+        if self._bounce_y < 0:
+            self._bounce_y = 0
+            self._vel_y = abs(self._vel_y)
+        elif self._bounce_y + wh > sh:
+            self._bounce_y = float(sh - wh)
+            self._vel_y = -abs(self._vel_y)
+
+        self.root.geometry(f"+{int(self._bounce_x)}+{int(self._bounce_y)}")
+
+    def _stop_bounce(self):
+        """Snap window back to screen centre when pulsing ends."""
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        ww = self.root.winfo_width()
+        wh = self.root.winfo_height()
+        cx = (sw - ww) // 2
+        cy = (sh - wh) // 2
+        self.root.geometry(f"+{cx}+{cy}")
+        self._bounce_x = float(cx)
+        self._bounce_y = float(cy)
 
     # Main update loop --------------------------------------------------------
 
@@ -89,20 +151,34 @@ class ClockApp:
         pulse = is_pulse_active(now)
 
         if pulse:
-            # Smooth sine-wave zoom: 1 cycle every ZOOM_PERIOD seconds
+            # --- Zoom ---
             phase     = (time.monotonic() % ZOOM_PERIOD) / ZOOM_PERIOD
             zoom      = 1.0 + ZOOM_AMPLITUDE * math.sin(phase * 2 * math.pi)
             font_size = max(8, int(self._base_font * zoom))
 
-            # Blink: flip colour every tick (50 ms → visually ~10 Hz)
+            # --- Blink ---
             self._blink_show = not self._blink_show
             fg = BLINK_COLOR if self._blink_show else PULSE_BG
             bg = PULSE_BG
+
+            # --- Bounce ---
+            if not self._bouncing:
+                # First tick of a new pulse — snapshot current position
+                self._bounce_x    = float(self.root.winfo_x())
+                self._bounce_y    = float(self.root.winfo_y())
+                self._last_bounce = time.monotonic()
+                self._bouncing    = True
+            self._step_bounce()
+
         else:
             font_size        = self._base_font
             self._blink_show = True
             fg               = TEXT_COLOR
             bg               = BG_COLOR
+
+            if self._bouncing:
+                self._bouncing = False
+                self._stop_bounce()
 
         self.label.configure(
             text=now.strftime("%H:%M"),
@@ -112,7 +188,6 @@ class ClockApp:
         )
         self.root.configure(bg=bg)
 
-        # 50 ms during pulse for smooth animation; 200 ms otherwise
         self.root.after(50 if pulse else 200, self._tick)
 
 
