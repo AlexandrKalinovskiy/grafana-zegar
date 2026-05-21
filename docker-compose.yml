@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  clock:
+    build: .
+    container_name: zegar
+    # Pass the host X11 display into the container
+    environment:
+      - DISPLAY=${DISPLAY}
+      - TZ=${TZ:-Europe/Warsaw}
+    volumes:
+      # X11 socket – required to open a native window on the host desktop
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Mount .env so you can change pulse settings without rebuilding
+      - ./.env:/app/.env
+    network_mode: host      # simplest approach for X11 on Linux
+    restart: unless-stopped
