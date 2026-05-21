@@ -1,17 +1,18 @@
-version: '3.8'
-
 services:
   clock:
     build: .
     container_name: zegar
-    # Pass the host X11 display into the container
     environment:
-      - DISPLAY=${DISPLAY}
+      # DISPLAY: jeśli nie ustawione w środowisku, próbuje :0 (standardowy X11 na Raspberry Pi)
+      - DISPLAY=${DISPLAY:-:0}
       - TZ=${TZ:-Europe/Warsaw}
+      - XAUTHORITY=${XAUTHORITY:-/root/.Xauthority}
     volumes:
-      # X11 socket – required to open a native window on the host desktop
+      # X11 socket – wymagany aby kontener otworzył okno na pulpicie
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Mount .env so you can change pulse settings without rebuilding
+      # Xauthority – pliki autoryzacji X11 (jeśli istnieją)
+      - ${XAUTHORITY:-/root/.Xauthority}:/root/.Xauthority:ro
+      # Konfiguracja alarmu
       - ./.env:/app/.env
-    network_mode: host      # simplest approach for X11 on Linux
+    network_mode: host
     restart: unless-stopped
