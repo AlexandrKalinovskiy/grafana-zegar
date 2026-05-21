@@ -1,29 +1,30 @@
 import tkinter as tk
 import os
 import time
+import math
 from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # --- Config from .env ---
-PULSE_START_TIME   = os.getenv("PULSE_START_TIME", "12:00:00")
+PULSE_START_TIME    = os.getenv("PULSE_START_TIME", "12:00:00")
 PULSE_DURATION_SECS = int(os.getenv("PULSE_DURATION_SECS", "60"))
 
-BG_COLOR      = "#3a3a3a"   # normal grey background
-PULSE_BG      = "#1a1a1a"   # dark flash during pulse
-TEXT_COLOR    = "#ffffff"
-BLINK_COLOR   = "#ff4444"   # text colour during blink
+BG_COLOR    = "#3a3a3a"
+PULSE_BG    = "#1a1a1a"
+TEXT_COLOR  = "#ffffff"
+BLINK_COLOR = "#ff4444"
 
-BLINK_PERIOD_MS = 500        # ms – how fast the text blinks
+ZOOM_PERIOD    = 2.0   # seconds per full zoom cycle
+ZOOM_AMPLITUDE = 0.25  # ±25 % of base font size
 
-# --- Helper ---------------------------------------------------------------
+# --- Helpers ---------------------------------------------------------------
 
 def parse_hms(s: str) -> int:
-    """Return total seconds from HH:MM:SS string."""
     parts = s.strip().split(":")
-    h = int(parts[0]) if len(parts) > 0 else 0
-    m = int(parts[1]) if len(parts) > 1 else 0
+    h   = int(parts[0]) if len(parts) > 0 else 0
+    m   = int(parts[1]) if len(parts) > 1 else 0
     sec = int(parts[2]) if len(parts) > 2 else 0
     return h * 3600 + m * 60 + sec
 
@@ -32,82 +33,92 @@ def is_pulse_active(now: datetime) -> bool:
     current = now.hour * 3600 + now.minute * 60 + now.second
     start   = parse_hms(PULSE_START_TIME)
     end     = (start + PULSE_DURATION_SECS) % 86400
-
-    if start + PULSE_DURATION_SECS > 86400:          # spans midnight
+    if start + PULSE_DURATION_SECS > 86400:
         return current >= start or current < end
     return start <= current < end
 
 
-# --- Main Window ----------------------------------------------------------
+# --- Main Window -----------------------------------------------------------
 
 class ClockApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Zegar")
         self.root.configure(bg=BG_COLOR)
-        self.root.minsize(200, 80)
+        self.root.minsize(180, 70)
 
-        # Single label fills the window
         self.label = tk.Label(
             root,
-            text="00:00:00",
+            text="00:00",
             bg=BG_COLOR,
             fg=TEXT_COLOR,
             font=("Monospace", 60, "bold"),
         )
         self.label.pack(expand=True, fill="both")
 
-        # Bind resize to adjust font size
         self.root.bind("<Configure>", self._on_resize)
 
-        self._blink_visible = True
-        self._last_size = (0, 0)
+        self._base_font  = 60
+        self._last_size  = (0, 0)
+        self._blink_show = True   # toggles for blink effect
 
         self._tick()
 
-    # Responsive font ---------------------------------------------------------
+    # Responsive base font size -----------------------------------------------
+
+    def _recalc_base(self, w, h):
+        by_h = max(8, int(h * 0.55))
+        by_w = max(8, int(w / (5 * 0.62)))   # "HH:MM" = 5 chars
+        return min(by_h, by_w)
 
     def _on_resize(self, event=None):
         w = self.root.winfo_width()
         h = self.root.winfo_height()
         if (w, h) == self._last_size:
             return
-        self._last_size = (w, h)
-        # Font size = 55 % of window height, capped so it fits width too
-        size_by_h = max(8, int(h * 0.55))
-        # Rough estimate: monospace char ≈ 0.6 × font-size wide, 8 chars
-        size_by_w = max(8, int(w / (8 * 0.62)))
-        font_size = min(size_by_h, size_by_w)
-        self.label.configure(font=("Monospace", font_size, "bold"))
+        self._last_size  = (w, h)
+        self._base_font  = self._recalc_base(w, h)
+        # Only apply directly when not pulsing (pulse loop will apply zoom)
+        if not is_pulse_active(datetime.now()):
+            self.label.configure(font=("Monospace", self._base_font, "bold"))
 
-    # Clock tick --------------------------------------------------------------
+    # Main update loop --------------------------------------------------------
 
     def _tick(self):
-        now = datetime.now()
+        now   = datetime.now()
         pulse = is_pulse_active(now)
 
         if pulse:
-            # Toggle text visibility each BLINK_PERIOD_MS
-            self._blink_visible = not self._blink_visible
-            fg = BLINK_COLOR if self._blink_visible else BG_COLOR
+            # Smooth sine-wave zoom: 1 cycle every ZOOM_PERIOD seconds
+            phase     = (time.monotonic() % ZOOM_PERIOD) / ZOOM_PERIOD
+            zoom      = 1.0 + ZOOM_AMPLITUDE * math.sin(phase * 2 * math.pi)
+            font_size = max(8, int(self._base_font * zoom))
+
+            # Blink: flip colour every tick (50 ms → visually ~10 Hz)
+            self._blink_show = not self._blink_show
+            fg = BLINK_COLOR if self._blink_show else PULSE_BG
             bg = PULSE_BG
         else:
-            self._blink_visible = True
-            fg = TEXT_COLOR
-            bg = BG_COLOR
+            font_size        = self._base_font
+            self._blink_show = True
+            fg               = TEXT_COLOR
+            bg               = BG_COLOR
 
-        time_str = now.strftime("%H:%M:%S")
-        self.label.configure(text=time_str, fg=fg, bg=bg)
+        self.label.configure(
+            text=now.strftime("%H:%M"),
+            fg=fg,
+            bg=bg,
+            font=("Monospace", font_size, "bold"),
+        )
         self.root.configure(bg=bg)
 
-        # Schedule next update
-        delay = BLINK_PERIOD_MS if pulse else 200
-        self.root.after(delay, self._tick)
+        # 50 ms during pulse for smooth animation; 200 ms otherwise
+        self.root.after(50 if pulse else 200, self._tick)
 
 
-# --- Entry point ----------------------------------------------------------
+# --- Entry point -----------------------------------------------------------
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = ClockApp(root)
+    ClockApp(root)
     root.mainloop()
