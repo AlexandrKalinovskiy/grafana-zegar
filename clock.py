@@ -69,6 +69,8 @@ class ClockApp:
         self.root.title("Zegar")
         self.root.configure(bg=BG_COLOR)
         self.root.minsize(180, 70)
+        # Zawsze na wierzchu – ponad wszystkimi innymi oknami
+        self.root.attributes("-topmost", True)
 
         # --- Layout: clock label + save-position button ---
         self.label = tk.Label(
